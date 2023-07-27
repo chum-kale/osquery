@@ -9,15 +9,33 @@
 
 #include <cstdlib>
 #include <cstring>
-#include <iostream>
 #include <regex>
+#include <string>
+#include <algorithm>
+#include <iostream>
+#include <dirent.h>
+#include <map>
+#include <boost/filesystem.hpp>
+#include <boost/filesystem/fstream.hpp>
+#include <fstream>
+#include <boost/property_tree/json_parser.hpp>
+#include <boost/property_tree/ptree.hpp>
 
+#include <boost/archive/iterators/base64_from_binary.hpp>
+#include <boost/archive/iterators/binary_from_base64.hpp>
+#include <boost/archive/iterators/transform_width.hpp>
+#include <boost/archive/iterators/insert_linebreaks.hpp>
+#include <boost/archive/iterators/remove_whitespace.hpp>
+#include <algorithm>
+#include <boost/iostreams/filter/zlib.hpp>
 #include <boost/algorithm/string/classification.hpp>
 #include <boost/algorithm/string/predicate.hpp>
 #include <boost/algorithm/string/split.hpp>
 #include <boost/asio.hpp>
 #include <boost/foreach.hpp>
 #include <boost/property_tree/json_parser.hpp>
+#include <boost/date_time/posix_time/posix_time.hpp>
+
 
 #if !defined(BOOST_ASIO_HAS_LOCAL_SOCKETS)
 #error Boost error: Local sockets not available
@@ -29,6 +47,9 @@
 #include <osquery/utils/conversions/join.h>
 #include <osquery/utils/info/platform_type.h>
 #include <osquery/utils/json/json.h>
+#include <boost/filesystem.hpp>
+#include <boost/filesystem/fstream.hpp>
+#include <fstream>
 
 // When building on linux, the extended schema of docker_containers will
 // add some additional columns to support user namespaces
@@ -38,6 +59,9 @@
 
 namespace pt = boost::property_tree;
 namespace local = boost::asio::local;
+namespace fs = std::filesystem;
+using namespace std;
+namespace gz = boost::iostreams::gzip;
 
 namespace osquery {
 
@@ -1203,38 +1227,68 @@ QueryData genImageHistory(QueryContext& context) {
  */
 QueryData genImages(QueryContext& context) {
   QueryData results;
-  pt::ptree tree;
-  Status s = dockerApi("/images/json", tree);
-  if (!s.ok()) {
-    VLOG(1) << "Error getting docker images: " << s.what();
-    return results;
-  }
 
-  for (const auto& entry : tree) {
-    try {
-      const pt::ptree& node = entry.second;
-      Row r;
-      r["id"] = node.get<std::string>("Id", "");
-      if (boost::starts_with(r["id"], "sha256:")) {
-        r["id"].erase(0, 7);
-      }
-      r["created"] = BIGINT(node.get<uint64_t>("Created", 0));
-      r["size_bytes"] = BIGINT(node.get<uint64_t>("Size", 0));
-      std::string tags;
-      for (const auto& tag : node.get_child("RepoTags")) {
-        if (!tags.empty()) {
-          tags.append(",");
+  pt::ptree tree;
+  std::vector<std::string> image_ids{};
+  std::string layers_root = ("/var/snap/docker/common/var-lib-docker/image/overlay2/layerdb/sha256/");
+  std::string s = "diff";
+  std::map<std::string, std::string> layer_map;
+  if (std::filesystem::is_directory(layers_root))
+    {
+      DIR *dir;
+      struct dirent *ent;
+      dir = opendir(layers_root.c_str());
+      while ((ent = readdir(dir)) != NULL)
+      {
+        std::string new_path = (layers_root + ent->d_name + "/");
+        std::string diff_file = new_path + "diff";
+        if (is_regular_file(diff_file))
+        {
+          std::ifstream ifs(diff_file); 
+          std::string content((std::istreambuf_iterator<char>(ifs)), (std::istreambuf_iterator<char>()));
+          layer_map[content] = new_path;
         }
-        tags.append(tag.second.data());
       }
-      r["tags"] = tags;
+    }
+  std::string image_path = ("/var/snap/docker/common/var-lib-docker/image/overlay2/imagedb/content/sha256");
+  for (const auto& entry : fs::directory_iterator(image_path))
+  {
+    
+    if (entry.is_regular_file())
+    {
+      std::vector<std::string> diff_ids;
+      std::map<string, string>::iterator itr = layer_map.begin();
+      Row r;
+      cout << "diff ids size: " << diff_ids.size() << endl;
+      for (int i = 0; i < diff_ids.size(); i++)
+      {
+        cout << "for " << diff_ids[i] << endl;
+        for (itr = layer_map.begin(); itr != layer_map.end(); itr++)
+        {
+          cout << "matching with: " << itr->first << endl;
+          if (diff_ids[i] == itr->first)
+          {
+            std::string size_path = (layers_root + itr->first + "size");
+            std::ifstream ifs(size_path); 
+            std::string size((std::istreambuf_iterator<char>(ifs)), (std::istreambuf_iterator<char>()));
+            r["size_bytes"] = size;
+          }
+        }
+      }
+    }
+      r["id"] = entry.path().filename();
+
+      std::string img_path = entry.path().string();
+      pt::ptree root;
+      pt :: read_json(img_path, root);
+      std::string Created = root.get<std::string>("created", "");
+
+      r["created"] = Created.substr(0, 4) + Created.substr(5, 2) + Created.substr(8, 2);
+
       results.push_back(r);
-    } catch (const pt::ptree_error& e) {
-      VLOG(1) << "Error getting docker image details: " << e.what();
     }
   }
-
-  return results;
+ return results;
 }
 
 /**
