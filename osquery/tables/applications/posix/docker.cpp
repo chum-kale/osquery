@@ -27,7 +27,7 @@
 #include <boost/archive/iterators/insert_linebreaks.hpp>
 #include <boost/archive/iterators/remove_whitespace.hpp>
 #include <algorithm>
-#include <boost/iostreams/filter/zlib.hpp>
+// a#include <boost/iostreams/filter/zlib.hpp>
 #include <boost/algorithm/string/classification.hpp>
 #include <boost/algorithm/string/predicate.hpp>
 #include <boost/algorithm/string/split.hpp>
@@ -61,7 +61,7 @@ namespace pt = boost::property_tree;
 namespace local = boost::asio::local;
 namespace fs = std::filesystem;
 using namespace std;
-namespace gz = boost::iostreams::gzip;
+//namespace gz = boost::iostreams::gzip;
 
 namespace osquery {
 
@@ -1242,7 +1242,7 @@ QueryData genImages(QueryContext& context) {
       {
         std::string new_path = (layers_root + ent->d_name + "/");
         std::string diff_file = new_path + "diff";
-        if (is_regular_file(diff_file))
+        if (boost::filesystem::is_regular_file(diff_file))
         {
           std::ifstream ifs(diff_file); 
           std::string content((std::istreambuf_iterator<char>(ifs)), (std::istreambuf_iterator<char>()));
@@ -1254,24 +1254,69 @@ QueryData genImages(QueryContext& context) {
   for (const auto& entry : fs::directory_iterator(image_path))
   {
     
+    Row r;
     if (entry.is_regular_file())
     {
       std::vector<std::string> diff_ids;
+      int layer_count = 0;
+      int layer_id;
+      DIR *dr;
+      struct dirent *fin;
+      //std::string image_entry = "/var/snap/docker/common/var-lib-docker/image/overlay2/imagedb/content/sha256/" + entry;
+      //image_path += entry;
+      std::string data;
+      pt::ptree root;
+
+      pt::read_json(entry.path().string(), root);
+      //cout << entry.path().string();
+      for (pt::ptree::value_type &rootfs : root.get_child("rootfs"))
+      {
+        std::string id = rootfs.first;
+        if (id == "diff_ids")
+        {
+          for (pt::ptree::value_type &value : rootfs.second)
+          {
+            diff_ids.push_back(value.second.get_value<std::string>());
+          }
+        }
+      }
+
       std::map<string, string>::iterator itr = layer_map.begin();
-      Row r;
-      cout << "diff ids size: " << diff_ids.size() << endl;
+      std::string rem = "sha256:";
+      /*for (std::string& str : diff_ids)
+      {
+        size_t pos = str.find(rem);
+        if (pos != std::string::npos)
+        {
+          str.erase(pos, rem.length());
+        }
+      }*/
+      
+      //cout << "diff ids size: " << diff_ids.size() << endl;
       for (int i = 0; i < diff_ids.size(); i++)
       {
-        cout << "for " << diff_ids[i] << endl;
+        //cout << "for " << diff_ids[i] << endl;
         for (itr = layer_map.begin(); itr != layer_map.end(); itr++)
         {
-          cout << "matching with: " << itr->first << endl;
+          //cout << "matching with: " << itr->first << endl;
           if (diff_ids[i] == itr->first)
           {
-            std::string size_path = (layers_root + itr->first + "size");
-            std::ifstream ifs(size_path); 
+            std::string mod = itr->first;
+            size_t pos = mod.find(rem);
+            if (pos != std::string::npos)
+            {
+              mod.erase(pos, rem.length());
+            }
+            cout << mod;
+            std::string size_path = (layers_root + mod + "/size");
+            cout << std::endl;
+            cout << size_path << std::endl;
+            std::ifstream ifs(size_path);
             std::string size((std::istreambuf_iterator<char>(ifs)), (std::istreambuf_iterator<char>()));
-            r["size_bytes"] = size;
+            //cout << size;
+            if (!size.empty()) {
+              r["size_bytes"] = size;
+            }
           }
         }
       }
@@ -1287,7 +1332,7 @@ QueryData genImages(QueryContext& context) {
 
       results.push_back(r);
     }
-  }
+  
  return results;
 }
 
